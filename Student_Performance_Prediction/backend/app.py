@@ -1,106 +1,187 @@
-from flask import Flask, request, jsonify, send_file, session
-from flask_cors import CORS
+import os
 import joblib
 import pandas as pd
-import os
+import streamlit as st
 
-app = Flask(__name__)
-app.secret_key = "admin-secret-key"  # change in real apps
-CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
+# 1. Page Configuration
+st.set_page_config(
+    page_title="Student Performance Predictor",
+    page_icon="🎓",
+    layout="centered",
+)
 
+# 2. Load ML Model
+@st.cache_resource
+def load_model():
+    return joblib.load("model.pkl")
 
-model = joblib.load("model.pkl")
+model = load_model()
 
+# 3. Setup CSV Database File
 CSV_FILE = "student_data.csv"
-
-# Create CSV if not exists
 if not os.path.exists(CSV_FILE):
-    df = pd.DataFrame(columns=[
+    df_init = pd.DataFrame(columns=[
         "RollNumber", "Gender", "StudyTimeWeekly", "AttendanceRatio",
         "Tutoring", "ParentalSupport", "Prediction"
     ])
-    df.to_csv(CSV_FILE, index=False)
+    df_init.to_csv(CSV_FILE, index=False)
 
+# 4. Initialize Session State for Admin Authentication
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
 
-@app.route("/predict", methods=["POST"])
-def predict():
-    try:
-        data = request.json
+# 5. Sidebar Navigation
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Student Predictor", "Admin Panel"])
 
-        total_classes = int(data["TotalClasses"])
-        classes_attended = int(data["ClassesAttended"])
-        attendance_ratio = classes_attended / total_classes
+# ==========================================
+# PAGE 1: STUDENT PREDICTOR
+# ==========================================
+if page == "Student Predictor":
+    st.title("🎓 Student Performance Predictor")
+    st.write("Predict academic outcome using machine learning.")
 
-        input_df = pd.DataFrame([{
-            "Gender": data["Gender"],
-            "StudyTimeWeekly": float(data["StudyTimeWeekly"]),
-            "AttendanceRatio": attendance_ratio,
-            "Tutoring": data["Tutoring"],
-            "ParentalSupport": data["ParentalSupport"]
-        }])
+    with st.form("prediction_form"):
+        roll_number = st.text_input("Roll Number", placeholder="Enter roll number")
+        
+        # UI selections mapped to model-expected numbers from training data
+        gender_label = st.selectbox("Gender", ["Select", "Male", "Female"])
+        study_time = st.number_input("Study Time (hrs/week)", min_value=0.0, step=0.1, value=15.0)
+        total_classes = st.number_input("Total Classes", min_value=1, step=1, value=100)
+        classes_attended = st.number_input("Classes Attended", min_value=0, step=1, value=80)
+        
+        tutoring_label = st.selectbox("Tutoring", ["Select", "Yes", "No"])
+        parental_support_label = st.selectbox("Parental Support", ["Select", "Low", "Medium", "High"])
 
-        # ML Prediction
-        prediction = int(model.predict(input_df)[0])
+        submit_btn = st.form_submit_button("Predict Result")
 
-        # ADD THIS PART EXACTLY HERE (SAVE DATA)
-        save_df = pd.DataFrame([{
-            "RollNumber": data["RollNumber"],
-            "Gender": data["Gender"],
-            "StudyTimeWeekly": float(data["StudyTimeWeekly"]),
-            "AttendanceRatio": attendance_ratio,
-            "Tutoring": data["Tutoring"],
-            "ParentalSupport": data["ParentalSupport"],
-            "Prediction": prediction
-        }])
+    if submit_btn:
+        # Validation checks
+        if (roll_number == "" or gender_label == "Select" or 
+            tutoring_label == "Select" or parental_support_label == "Select"):
+            st.error("⚠️ Please fill out all required fields correctly.")
+        elif classes_attended > total_classes:
+            st.error("⚠️ Classes attended cannot be greater than total classes.")
+        else:
+            attendance_ratio = classes_attended / total_classes
 
-        save_df.to_csv(CSV_FILE, mode="a", header=False, index=False)
+            # Map user inputs to exact numeric values used during training (source: 12)
+            gender_val = 1 if gender_label == "Male" else 0
+            tutoring_val = 1 if tutoring_label == "Yes" else 0
+            
+            # Mapping Parental Support labels to dataset integer codes
+            support_mapping = {"Low": 1, "Medium": 2, "High": 3}
+            parental_support_val = support_mapping.get(parental_support_label, 1)
 
-        return jsonify({
-            "prediction": int(prediction),
-            "attendance_ratio": round(attendance_ratio, 2)
-        })
+            # Prepare dataframe matching the exact feature names and types from training
+            input_df = pd.DataFrame([{
+                "Gender": gender_val,
+                "StudyTimeWeekly": float(study_time),
+                "AttendanceRatio": attendance_ratio,
+                "Tutoring": tutoring_val,
+                "ParentalSupport": parental_support_val
+            }])
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            # try:
+            #     # ML Prediction
+            #     prediction = int(model.predict(input_df)[0])
 
-@app.route("/admin/login", methods=["POST", "OPTIONS"])
-def admin_login():
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True})
+            #     # Save record to CSV
+            #     save_df = pd.DataFrame([{
+            #         "RollNumber": roll_number,
+            #         "Gender": gender_label,
+            #         "StudyTimeWeekly": float(study_time),
+            #         "AttendanceRatio": attendance_ratio,
+            #         "Tutoring": tutoring_label,
+            #         "ParentalSupport": parental_support_label,
+            #         "Prediction": prediction
+            #     }])
+            #     save_df.to_csv(CSV_FILE, mode="a", header=False, index=False)
 
-    data = request.json
-    if data["username"] == "admin" and data["password"] == "admin123":
-        session["admin"] = True
-        return jsonify({"success": True})
-    return jsonify({"success": False}), 401
+            #     # Display Result
+            #     st.markdown("---")
+            #     if prediction == 1:
+            #         st.success(f"✅ **Student is likely to PASS** (Attendance Ratio: {round(attendance_ratio, 2)})")
+            #     else:
+            #         st.error(f"❌ **Student is likely to FAIL** (Attendance Ratio: {round(attendance_ratio, 2)})")
 
+            # except Exception as e:
+            #     st.error(f"⚠️ Error during prediction: {e}")
+            try:
+                # 🔍 DEBUG: Print input data to terminal to check values
+                print("Input DataFrame Sent to Model:\n", input_df)
 
-# ADMIN: get all data
-@app.route("/admin/data", methods=["GET"])
-def admin_data():
-    if not session.get("admin"):
-        return jsonify({"error": "Unauthorized"}), 403
+                # ML Prediction & Probabilities
+                prediction = int(model.predict(input_df)[0])
+                probabilities = model.predict_proba(input_df)
+                
+                print("Model Prediction:", prediction)
+                print("Probabilities [Fail, Pass]:", probabilities)
 
-    df = pd.read_csv(CSV_FILE)
-    return jsonify({
-        "count": len(df),
-        "data": df.to_dict(orient="records")
-    })
+                # Save record to CSV
+                save_df = pd.DataFrame([{
+                    "RollNumber": roll_number,
+                    "Gender": gender_label,
+                    "StudyTimeWeekly": float(study_time),
+                    "AttendanceRatio": attendance_ratio,
+                    "Tutoring": tutoring_label,
+                    "ParentalSupport": parental_support_label,
+                    "Prediction": prediction
+                }])
+                save_df.to_csv(CSV_FILE, mode="a", header=False, index=False)
 
+                # Display Result & Probability
+                st.markdown("---")
+                pass_prob = probabilities[0][1] * 100 # percentage chance of passing
+                
+                if prediction == 1:
+                    st.success(f"✅ **Student is likely to PASS** (Confidence: {pass_prob:.1f}%, Attendance Ratio: {round(attendance_ratio, 2)})")
+                else:
+                    st.error(f"❌ **Student is likely to FAIL** (Confidence: {100 - pass_prob:.1f}%, Attendance Ratio: {round(attendance_ratio, 2)})")
 
-# ADMIN: download CSV
-@app.route("/admin/download", methods=["GET"])
-def download_csv():
-    return send_file(CSV_FILE, as_attachment=True)
+            except Exception as e:
+                st.error(f"⚠️ Error during prediction: {e}")
 
-@app.route("/admin/logout", methods=["GET"])
-def admin_logout():
-    session.pop("admin", None)
-    return jsonify({"message": "Logged out"})
+# ==========================================
+# PAGE 2: ADMIN PANEL
+# ==========================================
+elif page == "Admin Panel":
+    st.title("🔐 Admin Panel")
 
-@app.route("/")
-def home():
-    return "Student Performance Prediction Backend Running Successfully!"
+    if not st.session_state.admin_logged_in:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            login_btn = st.form_submit_button("Login")
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        if login_btn:
+            if username == "admin" and password == "admin123":
+                st.session_state.admin_logged_in = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid credentials")
+    else:
+        if st.button("🚪 Logout"):
+            st.session_state.admin_logged_in = False
+            st.rerun()
+
+        st.markdown("---")
+        
+        if os.path.exists(CSV_FILE):
+            df = pd.read_csv(CSV_FILE)
+            st.info(f"📊 Total Students Submitted: {len(df)}")
+
+            if not df.empty and "Prediction" in df.columns:
+                df["Result"] = df["Prediction"].apply(lambda x: "PASS" if x == 1 else "FAIL")
+
+            st.dataframe(df, use_container_width=True)
+
+            with open(CSV_FILE, "rb") as file:
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=file,
+                    file_name="student_data.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.warning("No submission records found yet.")
